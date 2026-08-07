@@ -1,7 +1,7 @@
 import { calculateEMA } from '../indicators/ema';
 import { calculateBollinger } from '../indicators/bollinger';
 import { calculateRSI } from '../indicators/rsi';
-import { avgCandleRange, detectImpulseCandles, closesNearExtreme } from '../indicators/candleRange';
+import { avgCandleRange, closesNearExtreme } from '../indicators/candleRange';
 
 export function detectHighTightFlag(candles, config) {
   if (candles.length < config.emaPeriod + 10) return null;
@@ -19,11 +19,9 @@ export function detectHighTightFlag(candles, config) {
 }
 
 function detectBullishFlag(candles, ema20, bollinger, rsi, config) {
-  const impulseGroups = detectImpulseCandles(candles, 'bullish');
-  if (impulseGroups.length === 0) return null;
-
-  const pole = impulseGroups[0];
-  if (pole.length < config.minPoleCandles || pole.length > config.maxPoleCandles) return null;
+  // Find a strong impulse pole — just look for consecutive expanding bullish candles
+  const pole = findBullishPole(candles, config);
+  if (!pole) return null;
 
   const poleStart = pole[0].open;
   const poleEnd = pole[pole.length - 1].close;
@@ -33,7 +31,7 @@ function detectBullishFlag(candles, ema20, bollinger, rsi, config) {
   const poleEndIndex = candles.indexOf(pole[pole.length - 1]);
   const remainingCandles = candles.slice(poleEndIndex + 1);
 
-  if (remainingCandles.length < config.minPoleCandles || remainingCandles.length > 10) {
+  if (remainingCandles.length < config.minPoleCandles || remainingCandles.length > 12) {
     return null;
   }
 
@@ -41,7 +39,8 @@ function detectBullishFlag(candles, ema20, bollinger, rsi, config) {
   for (let j = 0; j < remainingCandles.length; j++) {
     const emaIdx = ema20.length - remainingCandles.length + j;
     const emaVal = ema20[emaIdx];
-    if (!emaVal || remainingCandles[j].low <= emaVal) return null;
+    if (!emaVal) continue;
+    if (remainingCandles[j].low <= emaVal) return null;
   }
 
   // Retrace check
@@ -55,24 +54,25 @@ function detectBullishFlag(candles, ema20, bollinger, rsi, config) {
   const halfIdx = Math.floor(flagRanges.length / 2);
   const earlyAvg = flagRanges.slice(0, halfIdx).reduce((a, b) => a + b, 0) / halfIdx;
   const lateAvg = flagRanges.slice(halfIdx).reduce((a, b) => a + b, 0) / (flagRanges.length - halfIdx);
-  if (lateAvg > earlyAvg * 0.8) return null;
+  if (lateAvg > earlyAvg * 0.9) return null; // Relaxed
 
   // RSI cool
   const lastRSI = rsi[rsi.length - 1];
-  if (lastRSI === null || lastRSI > config.rsiResetMax) return null;
+  if (lastRSI !== null && lastRSI > config.rsiResetMax) return null;
 
-  // Bollinger squeeze
+  // Bollinger squeeze — relaxed
   const bbWidths = bollinger.bandwidth.filter(b => b !== null);
-  if (bbWidths.length < config.minPoleCandles * 2) return null;
-  const recentBB = bbWidths.slice(-config.minPoleCandles);
-  const olderBB = bbWidths.slice(-config.minPoleCandles * 2, -config.minPoleCandles);
-  const recentAvgBB = recentBB.reduce((a, b) => a + b, 0) / recentBB.length;
-  const olderAvgBB = olderBB.reduce((a, b) => a + b, 0) / olderBB.length;
-  if (recentAvgBB > olderAvgBB * config.squeezeThreshold) return null;
+  if (bbWidths.length >= config.minPoleCandles * 2) {
+    const recentBB = bbWidths.slice(-config.minPoleCandles);
+    const olderBB = bbWidths.slice(-config.minPoleCandles * 2, -config.minPoleCandles);
+    const recentAvgBB = recentBB.reduce((a, b) => a + b, 0) / recentBB.length;
+    const olderAvgBB = olderBB.reduce((a, b) => a + b, 0) / olderBB.length;
+    if (recentAvgBB > olderAvgBB * config.squeezeThreshold) return null;
+  }
 
   // Breakout candle
   const breakoutCandle = candles[candles.length - 1];
-  const avgFlagRange = avgCandleRange(remainingCandles);
+  const avgFlagRange = avgCandleRange(remainingCandles) || 0.0001;
   const breakoutRange = Math.abs(breakoutCandle.high - breakoutCandle.low);
 
   if (breakoutCandle.close <= flagHigh) return null;
@@ -97,17 +97,14 @@ function detectBullishFlag(candles, ema20, bollinger, rsi, config) {
       pole: { start: poleStart, end: poleEnd, height: poleHeight, candles: pole.length },
       flag: { high: flagHigh, low: flagLow, candles: remainingCandles.length, retracePercent },
       breakout: { price: breakoutCandle.close, range: breakoutRange, avgFlagRange },
-      indicators: { ema: ema20[ema20.length - 1], rsi: lastRSI, bbWidth: recentAvgBB },
+      indicators: { ema: ema20[ema20.length - 1], rsi: lastRSI, bbWidth: bbWidths.length > 0 ? bbWidths[bbWidths.length - 1] : null },
     },
   };
 }
 
 function detectBearishFlag(candles, ema20, bollinger, rsi, config) {
-  const impulseGroups = detectImpulseCandles(candles, 'bearish');
-  if (impulseGroups.length === 0) return null;
-
-  const pole = impulseGroups[0];
-  if (pole.length < config.minPoleCandles || pole.length > config.maxPoleCandles) return null;
+  const pole = findBearishPole(candles, config);
+  if (!pole) return null;
 
   const poleStart = pole[0].open;
   const poleEnd = pole[pole.length - 1].close;
@@ -117,7 +114,7 @@ function detectBearishFlag(candles, ema20, bollinger, rsi, config) {
   const poleEndIndex = candles.indexOf(pole[pole.length - 1]);
   const remainingCandles = candles.slice(poleEndIndex + 1);
 
-  if (remainingCandles.length < config.minPoleCandles || remainingCandles.length > 10) {
+  if (remainingCandles.length < config.minPoleCandles || remainingCandles.length > 12) {
     return null;
   }
 
@@ -125,7 +122,8 @@ function detectBearishFlag(candles, ema20, bollinger, rsi, config) {
   for (let j = 0; j < remainingCandles.length; j++) {
     const emaIdx = ema20.length - remainingCandles.length + j;
     const emaVal = ema20[emaIdx];
-    if (!emaVal || remainingCandles[j].high >= emaVal) return null;
+    if (!emaVal) continue;
+    if (remainingCandles[j].high >= emaVal) return null;
   }
 
   const flagHigh = Math.max(...remainingCandles.map(c => c.high));
@@ -137,21 +135,22 @@ function detectBearishFlag(candles, ema20, bollinger, rsi, config) {
   const halfIdx = Math.floor(flagRanges.length / 2);
   const earlyAvg = flagRanges.slice(0, halfIdx).reduce((a, b) => a + b, 0) / halfIdx;
   const lateAvg = flagRanges.slice(halfIdx).reduce((a, b) => a + b, 0) / (flagRanges.length - halfIdx);
-  if (lateAvg > earlyAvg * 0.8) return null;
+  if (lateAvg > earlyAvg * 0.9) return null;
 
   const lastRSI = rsi[rsi.length - 1];
-  if (lastRSI === null || lastRSI < (100 - config.rsiResetMax)) return null;
+  if (lastRSI !== null && lastRSI < (100 - config.rsiResetMax)) return null;
 
   const bbWidths = bollinger.bandwidth.filter(b => b !== null);
-  if (bbWidths.length < config.minPoleCandles * 2) return null;
-  const recentBB = bbWidths.slice(-config.minPoleCandles);
-  const olderBB = bbWidths.slice(-config.minPoleCandles * 2, -config.minPoleCandles);
-  const recentAvgBB = recentBB.reduce((a, b) => a + b, 0) / recentBB.length;
-  const olderAvgBB = olderBB.reduce((a, b) => a + b, 0) / olderBB.length;
-  if (recentAvgBB > olderAvgBB * config.squeezeThreshold) return null;
+  if (bbWidths.length >= config.minPoleCandles * 2) {
+    const recentBB = bbWidths.slice(-config.minPoleCandles);
+    const olderBB = bbWidths.slice(-config.minPoleCandles * 2, -config.minPoleCandles);
+    const recentAvgBB = recentBB.reduce((a, b) => a + b, 0) / recentBB.length;
+    const olderAvgBB = olderBB.reduce((a, b) => a + b, 0) / olderBB.length;
+    if (recentAvgBB > olderAvgBB * config.squeezeThreshold) return null;
+  }
 
   const breakoutCandle = candles[candles.length - 1];
-  const avgFlagRange = avgCandleRange(remainingCandles);
+  const avgFlagRange = avgCandleRange(remainingCandles) || 0.0001;
   const breakoutRange = Math.abs(breakoutCandle.high - breakoutCandle.low);
 
   if (breakoutCandle.close >= flagLow) return null;
@@ -175,13 +174,105 @@ function detectBearishFlag(candles, ema20, bollinger, rsi, config) {
       pole: { start: poleStart, end: poleEnd, height: poleHeight, candles: pole.length },
       flag: { high: flagHigh, low: flagLow, candles: remainingCandles.length, retracePercent },
       breakout: { price: breakoutCandle.close, range: breakoutRange, avgFlagRange },
-      indicators: { ema: ema20[ema20.length - 1], rsi: lastRSI, bbWidth: recentAvgBB },
+      indicators: { ema: ema20[ema20.length - 1], rsi: lastRSI, bbWidth: bbWidths.length > 0 ? bbWidths[bbWidths.length - 1] : null },
     },
   };
+}
+
+// Simple pole detection — no complex impulse detection
+function findBullishPole(candles, config) {
+  // Look from the end backwards for a series of bullish expanding candles
+  for (let start = candles.length - 3; start >= config.minPoleCandles; start--) {
+    const slice = candles.slice(start, start + config.minPoleCandles);
+    
+    // All bullish
+    if (!slice.every(c => c.close > c.open)) continue;
+    
+    // Expanding ranges
+    let expanding = true;
+    for (let i = 1; i < slice.length; i++) {
+      const prevRange = Math.abs(slice[i-1].high - slice[i-1].low);
+      const currRange = Math.abs(slice[i].high - slice[i].low);
+      if (currRange < prevRange) { expanding = false; break; }
+    }
+    if (!expanding) continue;
+    
+    // Check if there's a flag after it
+    const poleEnd = start + config.minPoleCandles - 1;
+    const remaining = candles.length - poleEnd - 1;
+    if (remaining >= config.minPoleCandles && remaining <= 12) {
+      return candles.slice(start, poleEnd + 1);
+    }
+  }
+  
+  // Try with 4 candles
+  for (let start = candles.length - 4; start >= config.minPoleCandles + 1; start--) {
+    const slice = candles.slice(start, start + 4);
+    if (!slice.every(c => c.close > c.open)) continue;
+    
+    let expanding = true;
+    for (let i = 1; i < slice.length; i++) {
+      if (Math.abs(slice[i].high - slice[i].low) < Math.abs(slice[i-1].high - slice[i-1].low)) {
+        expanding = false; break;
+      }
+    }
+    if (!expanding) continue;
+    
+    const poleEnd = start + 3;
+    const remaining = candles.length - poleEnd - 1;
+    if (remaining >= config.minPoleCandles && remaining <= 12) {
+      return candles.slice(start, poleEnd + 1);
+    }
+  }
+  
+  return null;
+}
+
+function findBearishPole(candles, config) {
+  for (let start = candles.length - 3; start >= config.minPoleCandles; start--) {
+    const slice = candles.slice(start, start + config.minPoleCandles);
+    
+    if (!slice.every(c => c.close < c.open)) continue;
+    
+    let expanding = true;
+    for (let i = 1; i < slice.length; i++) {
+      const prevRange = Math.abs(slice[i-1].high - slice[i-1].low);
+      const currRange = Math.abs(slice[i].high - slice[i].low);
+      if (currRange < prevRange) { expanding = false; break; }
+    }
+    if (!expanding) continue;
+    
+    const poleEnd = start + config.minPoleCandles - 1;
+    const remaining = candles.length - poleEnd - 1;
+    if (remaining >= config.minPoleCandles && remaining <= 12) {
+      return candles.slice(start, poleEnd + 1);
+    }
+  }
+  
+  for (let start = candles.length - 4; start >= config.minPoleCandles + 1; start--) {
+    const slice = candles.slice(start, start + 4);
+    if (!slice.every(c => c.close < c.open)) continue;
+    
+    let expanding = true;
+    for (let i = 1; i < slice.length; i++) {
+      if (Math.abs(slice[i].high - slice[i].low) < Math.abs(slice[i-1].high - slice[i-1].low)) {
+        expanding = false; break;
+      }
+    }
+    if (!expanding) continue;
+    
+    const poleEnd = start + 3;
+    const remaining = candles.length - poleEnd - 1;
+    if (remaining >= config.minPoleCandles && remaining <= 12) {
+      return candles.slice(start, poleEnd + 1);
+    }
+  }
+  
+  return null;
 }
 
 function estimateTickSize(candles) {
   const ranges = candles.slice(-50).map(c => Math.abs(c.high - c.low));
   if (ranges.length === 0) return 0.01;
-  return Math.min(...ranges) * 0.01 || 0.01;
+  return Math.min(...ranges.filter(r => r > 0)) * 0.01 || 0.01;
 }
