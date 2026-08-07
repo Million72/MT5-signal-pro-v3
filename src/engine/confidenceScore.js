@@ -2,30 +2,33 @@ export function calculateConfidence(signal, config) {
   if (!signal || !signal.details) return 0;
 
   const { pole, flag, breakout, indicators } = signal.details;
-  let score = 0;
+  let score = 30; // Start at base score
 
   // Pole quality (30%)
-  const poleScore = Math.min(pole.candles / config.minPoleCandles, 1.5) * 20;
-  const poleHeightBonus = pole.height > 0 ? Math.min(pole.height / 0.001, 10) : 0;
-  score += Math.min(poleScore + poleHeightBonus, 30);
+  if (pole.candles >= 4) score += 10;
+  if (pole.candles >= 5) score += 5;
+  score += Math.min(pole.height / 0.0001 * 5, 15);
 
-  // Flag quality (35%)
+  // Flag quality (30%)
   const retraceRatio = flag.retracePercent / config.maxRetracePercent;
-  const retraceScore = Math.max(0, 20 - retraceRatio * 20);
-  const compressionScore = flag.candles >= 4 && flag.candles <= 7 ? 15 : 10;
-  score += Math.min(retraceScore + compressionScore, 35);
+  score += Math.max(0, 15 - retraceRatio * 15);
+  if (flag.candles >= 4) score += 5;
+  if (flag.candles >= 6) score += 5;
+  if (flag.candles <= 10) score += 5;
 
   // Breakout quality (25%)
   const rangeRatio = breakout.range / (breakout.avgFlagRange || 0.0001);
-  const breakoutScore = Math.min(rangeRatio / config.breakoutRangeMultiplier * 15, 15);
-  const followScore = 10; // Already confirmed by gate
-  score += Math.min(breakoutScore + followScore, 25);
+  score += Math.min(rangeRatio * 3, 15);
+  score += 10; // Breakout candle confirmed
 
-  // Market context (10%)
-  const rsiScore = signal.direction === 'BUY'
-    ? Math.max(0, (config.rsiResetMax - indicators.rsi) / config.rsiResetMax * 10)
-    : Math.max(0, (indicators.rsi - (100 - config.rsiResetMax)) / config.rsiResetMax * 10);
-  score += Math.min(rsiScore, 10);
+  // RSI bonus (10%)
+  if (indicators.rsi !== null) {
+    if (signal.direction === 'BUY' && indicators.rsi < config.rsiResetMax) score += 5;
+    if (signal.direction === 'SELL' && indicators.rsi > (100 - config.rsiResetMax)) score += 5;
+  }
+
+  // BB squeeze bonus (5%)
+  if (indicators.bbWidth !== null && indicators.bbWidth > 0) score += 5;
 
   return Math.min(Math.round(score), 100);
 }
