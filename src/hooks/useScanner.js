@@ -6,6 +6,7 @@ export function useScanner(marketData) {
   const [scanCount, setScanCount] = useState(0);
   const [lastScanTime, setLastScanTime] = useState(null);
   const todayRef = useRef(new Date().toDateString());
+  const lastDataRef = useRef(null);
 
   useEffect(() => {
     todayRef.current = new Date().toDateString();
@@ -14,12 +15,16 @@ export function useScanner(marketData) {
   useEffect(() => {
     if (!marketData || Object.keys(marketData).length === 0) return;
 
+    // Check if data actually changed
+    const dataStr = JSON.stringify(marketData);
+    if (dataStr === lastDataRef.current) return;
+    lastDataRef.current = dataStr;
+
     const scan = () => {
       const newSignals = scanAllIndices(marketData);
 
       if (newSignals.length > 0) {
         setSignals(prev => {
-          // Reset if new day
           if (new Date().toDateString() !== todayRef.current) {
             todayRef.current = new Date().toDateString();
             return newSignals;
@@ -27,6 +32,9 @@ export function useScanner(marketData) {
 
           const existingIds = new Set(prev.map(s => s.id));
           const uniqueNew = newSignals.filter(s => !existingIds.has(s.id));
+          
+          if (uniqueNew.length === 0) return prev;
+          
           return [...uniqueNew, ...prev].sort((a, b) => b.confidence - a.confidence);
         });
       }
@@ -35,11 +43,9 @@ export function useScanner(marketData) {
       setLastScanTime(Date.now());
     };
 
-    // Scan on market data change
     scan();
 
-    // Also scan every 5 seconds
-    const interval = setInterval(scan, 5000);
+    const interval = setInterval(scan, 3000);
     return () => clearInterval(interval);
   }, [marketData]);
 
@@ -59,4 +65,4 @@ export function useScanner(marketData) {
     lastScanTime,
     isScanning: true,
   };
-    }
+}
